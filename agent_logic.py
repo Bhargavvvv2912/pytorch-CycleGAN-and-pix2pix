@@ -339,27 +339,38 @@ class DependencyAgent:
         pip_command_core = [python_executable, "-m", "pip", "install", "--no-build-isolation", "-r", str(temp_reqs_path.resolve())]
         _, stderr_core, returncode_core = run_command(pip_command_core)
         if returncode_core != 0:
+            enriched_stderr = stderr_core
             try:
-                with open(temp_reqs_path, 'r') as f:
-                    req_lines = f.readlines()
+                # Ensure we read the file we just wrote
+                if temp_reqs_path.exists():
+                    with open(temp_reqs_path, 'r') as f:
+                        req_lines = f.readlines()
 
-                def replace_line_ref(match):
-                    try:
-                        line_num = int(match.group(1))
-                        # Pip uses 1-based indexing
-                        if 1 <= line_num <= len(req_lines):
-                            # Get the package spec (e.g., "torch==2.9.1") and strip newlines
-                            pkg_spec = req_lines[line_num-1].strip()
-                            # Return formatted string: "torch==2.9.1 (line 23)"
-                            return f"'{pkg_spec}' (line {line_num})"
-                    except (ValueError, IndexError):
-                        pass
-                    return match.group(0) # Return original if lookup fails
+                    def replace_line_ref(match):
+                        try:
+                            # Extract line number
+                            line_num = int(match.group(1))
+                            
+                            # Pip uses 1-based indexing. Ensure valid range.
+                            if 1 <= line_num <= len(req_lines):
+                                # Get the package spec (e.g., "gitdb==4.0.12")
+                                pkg_spec = req_lines[line_num-1].strip()
+                                # If it's a comment or empty, look ahead? No, pip counts lines strictly.
+                                if pkg_spec:
+                                    return f"'{pkg_spec}' (line {line_num})"
+                        except Exception:
+                            pass
+                        return match.group(0) # Return original on failure
 
-                # Regex matches "line 23" or "(line 23)" case-insensitive
-                enriched_stderr = re.sub(r'\(?line\s+(\d+)\)?', replace_line_ref, stderr_core, flags=re.IGNORECASE)
-            except Exception:
-                enriched_stderr = stderr_core # Fallback if file read fails
+                    # Improved Regex: Handles "line 13", "line 13,", "(line 13)"
+                    # and explicitly looks for the number.
+                    enriched_stderr = re.sub(r'(?:line\s+|line\s+#)(\d+)', replace_line_ref, stderr_core, flags=re.IGNORECASE)
+            except Exception as e:
+                # If enrichment fails, we just use the original log. 
+                # This ensures the agent doesn't crash on logging logic.
+                print(f"DEBUG: Log enrichment failed: {e}")
+                enriched_stderr = stderr_core
+            # --- END FIX ---
             summary = self._get_error_summary(stderr_core)
             end_group()
             return False, f"Dependency installation failed: {summary}", stderr_core
