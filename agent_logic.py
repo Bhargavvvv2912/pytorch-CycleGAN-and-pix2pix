@@ -371,9 +371,9 @@ class DependencyAgent:
                 print(f"DEBUG: Log enrichment failed: {e}")
                 enriched_stderr = stderr_core
             # --- END FIX ---
-            summary = self._get_error_summary(stderr_core)
+            summary = self._get_error_summary(enriched_stderr)
             end_group()
-            return False, f"Dependency installation failed: {summary}", stderr_core
+            return False, f"Dependency installation failed: {summary}", enriched_stderr
         
         if self.config.get("IS_INSTALLABLE_PACKAGE", False):
             project_extras = self.config.get("PROJECT_EXTRAS", "")
