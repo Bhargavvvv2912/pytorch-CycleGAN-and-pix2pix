@@ -336,10 +336,30 @@ class DependencyAgent:
                 else:
                     f_write.write(f"{line}\n")
 
-        # FIXED: Added --no-build-isolation to bypass build errors during dependency install
         pip_command_core = [python_executable, "-m", "pip", "install", "--no-build-isolation", "-r", str(temp_reqs_path.resolve())]
         _, stderr_core, returncode_core = run_command(pip_command_core)
         if returncode_core != 0:
+            try:
+                with open(temp_reqs_path, 'r') as f:
+                    req_lines = f.readlines()
+
+                def replace_line_ref(match):
+                    try:
+                        line_num = int(match.group(1))
+                        # Pip uses 1-based indexing
+                        if 1 <= line_num <= len(req_lines):
+                            # Get the package spec (e.g., "torch==2.9.1") and strip newlines
+                            pkg_spec = req_lines[line_num-1].strip()
+                            # Return formatted string: "torch==2.9.1 (line 23)"
+                            return f"'{pkg_spec}' (line {line_num})"
+                    except (ValueError, IndexError):
+                        pass
+                    return match.group(0) # Return original if lookup fails
+
+                # Regex matches "line 23" or "(line 23)" case-insensitive
+                enriched_stderr = re.sub(r'\(?line\s+(\d+)\)?', replace_line_ref, stderr_core, flags=re.IGNORECASE)
+            except Exception:
+                enriched_stderr = stderr_core # Fallback if file read fails
             summary = self._get_error_summary(stderr_core)
             end_group()
             return False, f"Dependency installation failed: {summary}", stderr_core
