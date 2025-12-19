@@ -12,8 +12,21 @@ def run_cyclegan_smoke_test():
     print("--- Starting CycleGAN Smoke Test ---")
     
     try:
+        # --- Stage 0: Legacy Behavior Simulation (The Experiment) ---
+        # Many legacy scientific repositories from 2018-2023 rely on 'np.float'.
+        # This was removed in Numpy 2.0.
+        # By including this line, we simulate a "Runtime Behavior Failure" 
+        # if the Agent blindly updates to Numpy 2.3.5.
+        print("--> Stage 0: Verifying Legacy Numpy Compatibility...")
+        try:
+            _ = np.float(1.0)
+            print("    Legacy syntax check (np.float) PASSED.")
+        except AttributeError:
+            print("    Legacy syntax check FAILED. Detected Numpy 2.0+ incompatibility.")
+            raise AttributeError("module 'numpy' has no attribute 'float'")
+
         # --- Stage 1: Import Check ---
-        print("--> Stage 1: Importing core modules...")
+        print("\n--> Stage 1: Importing core modules...")
         try:
             from models import networks
             print("    Successfully imported models.networks")
@@ -39,17 +52,18 @@ def run_cyclegan_smoke_test():
             use_dropout=False, 
             init_type='normal', 
             init_gain=0.02
-            # gpu_ids=[]  <-- REMOVED
+            # gpu_ids=[]  <-- REMOVED to match modern CycleGAN signature
         )
         print("    Generator instantiated successfully.")
         
-        # Manually move to device if needed (default is usually CPU)
+        # Manually move to device
         netG.to(device)
 
         # --- Stage 4: Forward Pass (The Real Test) ---
         print("\n--> Stage 4: Running Forward Pass (Inference)...")
         
         # Create a random noise image tensor [Batch, Channels, Height, Width]
+        # CycleGAN standard size is 256x256
         dummy_input = torch.randn(1, 3, 256, 256).to(device)
         
         # Run inference

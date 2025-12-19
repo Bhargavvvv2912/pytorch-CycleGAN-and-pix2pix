@@ -33,9 +33,7 @@ jobs:
 
       - name: Install Agent Dependencies
         run: |
-          # Force clean install to avoid environment conflicts
-          python -m pip uninstall -y google-generativeai
-          python -m pip install google-generativeai pypi-simple packaging pip-tools
+          python -m pip install google-genai pypi-simple packaging pip-tools
 
       - name: Run the Autonomous Agent
         # -u forces unbuffered output. This ensures you see "Downloading..." logs 
