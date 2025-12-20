@@ -1,4 +1,4 @@
-# --- The Legacy Core (2023 Era) ---
+# --- Core (2023 Era) ---
 torch==2.0.0
 torchvision==0.15.0
 numpy==1.24.3
@@ -6,7 +6,7 @@ scipy==1.10.1
 scikit-image==0.19.3
 Pillow==9.5.0
 
-# --- Tools (Can be loose) ---
-dominate
-wandb
-tqdm
+# --- Tools (Pinned to 2023 to prevent "Unpinned" detection) ---
+dominate==2.8.0
+wandb==0.15.4
+tqdm==4.65.0
