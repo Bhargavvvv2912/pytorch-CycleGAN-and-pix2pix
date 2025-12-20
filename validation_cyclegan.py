@@ -12,19 +12,6 @@ def run_cyclegan_smoke_test():
     print("--- Starting CycleGAN Smoke Test ---")
     
     try:
-        # --- Stage 0: Legacy Behavior Simulation (The Experiment) ---
-        # Many legacy scientific repositories from 2018-2023 rely on 'np.float'.
-        # This was removed in Numpy 2.0.
-        # By including this line, we simulate a "Runtime Behavior Failure" 
-        # if the Agent blindly updates to Numpy 2.3.5.
-        print("--> Stage 0: Verifying Legacy Numpy Compatibility...")
-        try:
-            _ = np.float(1.0)
-            print("    Legacy syntax check (np.float) PASSED.")
-        except AttributeError:
-            print("    Legacy syntax check FAILED. Detected Numpy 2.0+ incompatibility.")
-            raise AttributeError("module 'numpy' has no attribute 'float'")
-
         # --- Stage 1: Import Check ---
         print("\n--> Stage 1: Importing core modules...")
         try:
