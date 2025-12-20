@@ -33,7 +33,7 @@ jobs:
 
       - name: Install Agent Dependencies
         run: |
-          python -m pip install google-genai pypi-simple packaging pip-tools
+          python -m pip install google-genai google-api-core pypi-simple packaging pip-tools
 
       - name: Run the Autonomous Agent
         # -u forces unbuffered output. This ensures you see "Downloading..." logs 
