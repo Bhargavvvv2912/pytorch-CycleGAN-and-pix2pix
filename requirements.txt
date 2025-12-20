@@ -1,8 +1,15 @@
+# --- Safe Legacy Core (Late 2023 / Early 2024) ---
+# These are new enough to have Python 3.11 wheels, 
+# but old enough to NOT be Numpy 2.0.
 
-torch
-torchvision
-numpy
-scikit-image
-dominate
-Pillow
-wandb
+torch==2.1.0
+torchvision==0.16.0
+numpy==1.26.4   # <--- The Critical Pin (Working State)
+scipy==1.11.4
+scikit-image==0.22.0
+Pillow==10.0.0
+
+# --- Tools ---
+dominate==2.9.0
+wandb==0.16.0
+tqdm==4.66.0
