@@ -17,19 +17,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # --- ADD THIS STEP TO FIX "NO SPACE LEFT" ---
+      - name: Free Disk Space (Ubuntu Runner)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+      # --------------------------------------------
+        
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Cache pip packages
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          # Using a specific key for CycleGAN to keep cache clean
-          key: ${{ runner.os }}-pip-cyclegan-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-cyclegan-
 
       - name: Install Agent Dependencies
         run: |
