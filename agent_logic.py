@@ -408,83 +408,112 @@ class DependencyAgent:
         
         if success:
             print(f"--> Toplevel Result: Direct update SUCCEEDED.")
-            return True, result_data if "skipped" in str(result_data) else target_version, None
+            return True, {package: result_data if "skipped" in str(result_data) else target_version}, None
 
         print(f"\n--> Toplevel Result: Direct update FAILED. Reason: '{result_data}'")
         
         # --- LEVEL 1 HEALING ---
         print("--> Action: Entering Level 1 Healing with 'Filter-Then-Scan' strategy.")
-        
-        # UNPACK THE NEW RETURN VALUE (healed_ver, rich_log)
         healed_version, level1_stderr = self._heal_with_filter_and_scan(package, current_version, target_version, baseline_reqs_path)
         
         if healed_version and healed_version != current_version:
              print(f"--> Healing Result: Level 1 Succeeded. Found new working version: {healed_version}")
-             return True, healed_version, None
+             return True, {package: healed_version}, None
 
-        # --- ESCALATION TO LEVEL 2 ---
-        print(f"\n--> Action: Level 1 Healing failed for '{package}'. Escalating to Level 2 'Co-Resolution Expert'.")
+        # --- ESCALATION TO LEVEL 2 (ITERATIVE GREEDY) ---
+        print(f"\n--> Action: Level 1 Healing failed for '{package}'. Escalating to Level 2 'Iterative Greedy Expansion'.")
         
-        # DECISION: Use the Level 1 log if available, as it contains specific conflict details
+        # Initial Diagnosis
         best_error_log = level1_stderr if level1_stderr else toplevel_stderr
-
-        # 1. Diagnose the blockers
-        print("    -> Step 1: Diagnosing blockers...")
-        blockers = self.expert.diagnose_conflict_from_log(best_error_log)
+        current_blockers = set(self.expert.diagnose_conflict_from_log(best_error_log))
         
-        # 2. Feasibility Check
-        print(f"    -> Step 2: Checking feasibility. Diagnosed blockers: {blockers}")
-        available_updates = self.get_available_updates_from_plan()
-        
-        # Robust filtering: Ignore Target, Project Name, Pip, Setuptools
         project_name = self.config.get("PROJECT_NAME", "").lower().replace('_', '-')
-        other_blockers = [
-            b for b in blockers 
-            if b.lower() != package.lower() 
-            and b.lower() != project_name
-            and b.lower() != "pip"
-            and b.lower() != "setuptools"
-        ]
         
-        updatable_blockers = {
-            pkg: ver for pkg, ver in available_updates.items() 
-            if pkg in other_blockers
-        }
-        
-        if not updatable_blockers:
-            print("    -> Feasibility Check FAILED: No other blocking packages have available updates.")
-            print("       A meaningful co-resolution is not possible at this time.")
-            return True, current_version, None 
+        def filter_blockers(blocker_set):
+            return {
+                b for b in blocker_set 
+                if b.lower() != package.lower() 
+                and b.lower() != project_name
+                and b.lower() != "pip"
+                and b.lower() != "setuptools"
+            }
 
-        print(f"    -> Feasibility Check PASSED. Candidates: {list(updatable_blockers.keys())}")
-
-        # 3. GREEDY HEURISTIC ATTEMPT (Update ALL blockers)
-        print(f"    -> Step 3: Attempting 'Greedy Maximization' (Update ALL blockers to latest)...")
+        # Iterative Loop Configuration
+        max_greedy_attempts = 5
+        greedy_history_log = [] 
         
-        greedy_plan = [f"{package}=={target_version}"]
-        for b_pkg, b_ver in updatable_blockers.items():
-            if b_pkg.lower() != package.lower():
-                greedy_plan.append(f"{b_pkg}=={b_ver}")
-        
-        print(f"       Greedy Plan: {greedy_plan}")
-        probe_success = self._run_co_resolution_probe(greedy_plan, baseline_reqs_path)
-        
-        if probe_success:
-            print("--> Greedy Maximization SUCCEEDED! (Skipped LLM)")
-            with open(progressive_baseline_path, "r") as f: temp_lines = f.readlines()
-            with open(progressive_baseline_path, "w") as f:
-                updated_pkgs = {self._get_package_name_from_spec(p.split('==')[0]): p.split('==')[1] for p in greedy_plan}
-                for line in temp_lines:
-                    p_name = self._get_package_name_from_spec(line.split('==')[0] if '==' in line else "")
-                    if p_name in updated_pkgs:
-                        f.write(f"{p_name}=={updated_pkgs[p_name]}\n")
-                    else:
-                        f.write(line)
-            return True, target_version, None
+        # NEW: Cycle Detection Memory
+        attempted_plans = set()
 
-        print("       Greedy Plan FAILED. Proceeding to Neuro-Symbolic Refinement.")
+        for i in range(max_greedy_attempts):
+            print(f"\n    -> [Greedy Expansion Iteration {i+1}/{max_greedy_attempts}]")
+            
+            valid_blockers = filter_blockers(current_blockers)
+            available_updates = self.get_available_updates_from_plan()
+            
+            updatable_blockers = {
+                pkg: ver for pkg, ver in available_updates.items() 
+                if pkg in valid_blockers
+            }
+            
+            print(f"       Current Conflict Cluster: {valid_blockers}")
+            
+            if not updatable_blockers and i == 0:
+                print("       No updatable blockers found in initial set. Skipping Greedy.")
+                break
 
-        # 4. NEURO-SYMBOLIC LOOP (Expert Agent)
+            # Construct Plan
+            greedy_plan = [f"{package}=={target_version}"]
+            for b_pkg, b_ver in updatable_blockers.items():
+                if b_pkg.lower() != package.lower():
+                    greedy_plan.append(f"{b_pkg}=={b_ver}")
+            
+            # --- NEW: CYCLE DETECTION ---
+            plan_signature = tuple(sorted(greedy_plan))
+            if plan_signature in attempted_plans:
+                print("       CRITICAL: Detected logical cycle! The agent is oscillating between plans.")
+                print("       Aborting Greedy Strategy to prevent infinite loops.")
+                best_error_log = greedy_history_log[-1][1] if greedy_history_log else best_error_log
+                break
+            attempted_plans.add(plan_signature)
+            # ----------------------------
+            
+            print(f"       Testing Greedy Plan: {greedy_plan}")
+            
+            # Run Probe (Now returns stderr)
+            probe_success, probe_stderr = self._run_co_resolution_probe(greedy_plan, baseline_reqs_path)
+            
+            if probe_success:
+                print("--> Greedy Maximization SUCCEEDED!")
+                changes_map = {self._get_package_name_from_spec(p.split('==')[0]): p.split('==')[1] for p in greedy_plan}
+                
+                with open(progressive_baseline_path, "r") as f: temp_lines = f.readlines()
+                with open(progressive_baseline_path, "w") as f:
+                    for line in temp_lines:
+                        p_name = self._get_package_name_from_spec(line.split('==')[0] if '==' in line else "")
+                        if p_name in changes_map:
+                            f.write(f"{p_name}=={changes_map[p_name]}\n")
+                        else:
+                            f.write(line)
+                return True, changes_map, None
+            
+            # Failure Handling
+            greedy_history_log.append((str(greedy_plan), "Failed"))
+            
+            new_blockers = set(self.expert.diagnose_conflict_from_log(probe_stderr))
+            filtered_new = filter_blockers(new_blockers)
+            
+            if filtered_new.issubset(current_blockers):
+                print("       Result: Failure did not reveal new updatable blockers. Greedy strategy stalled.")
+                best_error_log = probe_stderr
+                break
+            
+            print(f"       Result: Failure revealed new blockers: {filtered_new - current_blockers}")
+            current_blockers.update(filtered_new)
+
+        # 4. NEURO-SYMBOLIC LOOP (If Greedy Loop Stalls)
+        print("\n       Greedy Heuristic exhausted. Proceeding to Neuro-Symbolic Refinement.")
+        
         current_versions_map = {}
         with open(baseline_reqs_path, 'r') as f:
             for line in f:
@@ -493,19 +522,15 @@ class DependencyAgent:
                     v_part = line.split('==')[1].split(';')[0].strip()
                     current_versions_map[p_name] = v_part
 
-        history = []
-        history.append((str(greedy_plan), "Greedy update failed validation."))
+        history = greedy_history_log 
 
         for attempt in range(1, 4):
-            print(f"\n    -> [Co-Resolution Attempt {attempt}/3] Requesting Expert Plan...")
-            
-            # Pass the Best Error Log for the first attempt, then use history
-            current_error_log = best_error_log if attempt == 1 else "Previous plan failed"
+            print(f"\n    -> [LLM Refinement Attempt {attempt}/3] Requesting Expert Plan...")
             
             co_resolution_plan = self.expert.propose_co_resolution(
                 target_package=package, 
-                error_log=current_error_log, 
-                available_updates=updatable_blockers,
+                error_log=best_error_log if attempt == 1 else history[-1][1], 
+                available_updates=updatable_blockers, # Uses LAST known set of blockers
                 current_versions=current_versions_map,
                 history=history
             )
@@ -517,25 +542,26 @@ class DependencyAgent:
             plan_list = co_resolution_plan['proposed_plan']
             print(f"    -> Executing Plan: {plan_list}")
             
-            probe_success = self._run_co_resolution_probe(plan_list, baseline_reqs_path)
+            probe_success, probe_stderr = self._run_co_resolution_probe(plan_list, baseline_reqs_path)
 
             if probe_success:
                  print("--> Co-resolution probe SUCCEEDED!")
+                 changes_map = {self._get_package_name_from_spec(p.split('==')[0]): p.split('==')[1] for p in plan_list}
+                 
                  with open(progressive_baseline_path, "r") as f: temp_lines = f.readlines()
                  with open(progressive_baseline_path, "w") as f:
-                     updated_pkgs = {self._get_package_name_from_spec(p.split('==')[0]): p.split('==')[1] for p in plan_list}
                      for line in temp_lines:
                          p_name = self._get_package_name_from_spec(line.split('==')[0] if '==' in line else "")
-                         if p_name in updated_pkgs:
-                             f.write(f"{p_name}=={updated_pkgs[p_name]}\n")
+                         if p_name in changes_map:
+                             f.write(f"{p_name}=={changes_map[p_name]}\n")
                          else:
                              f.write(line)
-                 return True, target_version, None
+                 return True, changes_map, None
             
             history.append((str(plan_list), "Validation Failed"))
 
-        print(f"--> Healing Result: All attempts failed. Reverting to {current_version}.")
-        return True, current_version, None
+        print(f"--> Healing Result: All attempts failed. Reverting.")
+        return True, {package: current_version}, None
         
     def _heal_with_filter_and_scan(self, package, last_good_version, failed_version, baseline_reqs_path):
         start_group(f"Healing '{package}': Filter-Then-Scan Strategy")
@@ -638,7 +664,7 @@ class DependencyAgent:
                     continue
         return available_updates
 
-    def _run_co_resolution_probe(self, proposed_plan: list, baseline_reqs_path: Path) -> bool:
+    def _run_co_resolution_probe(self, proposed_plan: list, baseline_reqs_path: Path) -> tuple[bool, str]:
         start_group(f"Co-Resolution Probe: Testing plan {proposed_plan}")
         
         venv_dir = Path("./temp_co_res_venv")
@@ -669,28 +695,32 @@ class DependencyAgent:
             summary = self.expert.summarize_error(stderr_install)
             print(f"    Diagnosis: {summary}")
             end_group()
-            return False
+            return False, stderr_install # <--- RETURN ERROR LOG
 
-        print("\n--> Stage 2: Building and installing the project...")
-        # FIXED: Added --no-build-isolation
-        build_install_command = [python_executable, "-m", "pip", "install", "--no-build-isolation", f"./{project_dir}"]
-        _, stderr_build, returncode_build = run_command(build_install_command, cwd=project_dir)
-        if returncode_build != 0:
-            print("--> ERROR: Project build/install failed with the co-resolution set.")
-            end_group()
-            return False
+        # Stage 2: Install Project (Conditional)
+        if self.config.get("IS_INSTALLABLE_PACKAGE", False):
+            print("\n--> Stage 2: Building and installing the project...")
+            project_extras = self.config.get("PROJECT_EXTRAS", "")
+            build_install_command = [python_executable, "-m", "pip", "install", "--no-build-isolation", f"./{project_dir}{project_extras}"]
+            _, stderr_build, returncode_build = run_command(build_install_command, cwd=project_dir)
+            if returncode_build != 0:
+                print("--> ERROR: Project build/install failed with the co-resolution set.")
+                end_group()
+                return False, stderr_build # <--- RETURN ERROR LOG
+        else:
+            print("\n--> Stage 2: Skipped (Project is not an installable package).")
 
         print("\n--> Stage 3: Running validation suite on the co-resolution set...")
-        success, _, _ = validate_changes(python_executable, self.config, group_title="Validating Co-Resolution Plan")
+        success, _, val_output = validate_changes(python_executable, self.config, group_title="Validating Co-Resolution Plan")
         
         if not success:
             print("--> ERROR: Validation failed for the co-resolution set.")
             end_group()
-            return False
+            return False, val_output # <--- RETURN ERROR LOG
 
         print("--> SUCCESS: The co-resolution plan is provably working.")
         end_group()
-        return True
+        return True, ""
     
     def _unpin_and_bootstrap(self):
         """
