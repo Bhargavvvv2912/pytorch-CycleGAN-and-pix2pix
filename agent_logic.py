@@ -196,7 +196,7 @@ class DependencyAgent:
             changed_packages_this_pass = set()
             processed_in_this_pass = set()
 
-            # --- NEW: Build a Map of Current Versions for Comparison ---
+            # Map Current Versions
             current_pass_versions = {}
             with open(progressive_baseline_path, 'r') as f:
                 for line in f:
@@ -204,7 +204,6 @@ class DependencyAgent:
                         pkg = self._get_package_name_from_spec(line.split('==')[0])
                         ver = line.split('==')[1].split(';')[0].strip()
                         current_pass_versions[pkg] = ver
-            # -----------------------------------------------------------
 
             packages_to_update = []
             for package, current_version in current_pass_versions.items():
@@ -217,6 +216,7 @@ class DependencyAgent:
                 if progressive_baseline_path.exists(): progressive_baseline_path.unlink()
                 break 
 
+            # Prioritization
             update_plan = []
             for pkg, cur, target in packages_to_update:
                 components = self._calculate_update_risk_components(pkg, cur, target)
@@ -256,25 +256,38 @@ class DependencyAgent:
                 success, changes_dict, _ = self.attempt_update_with_healing(package, current_ver, target_ver, [], progressive_baseline_path, progressive_baseline_path)
                 
                 if success:
-                    # FIX: Filter out No-Ops (Reverts to same version)
+                    # --- CRITICAL FIX: Persist changes to file ---
+                    # We write updates here to ensure Toplevel/Level1 successes are saved.
+                    # It creates a double-write for Greedy (which writes internally), but that is safe/idempotent.
+                    real_changes_to_write = {}
+                    
                     for changed_pkg, reached_ver in changes_dict.items():
                         processed_in_this_pass.add(changed_pkg)
-                        
-                        # Lookup old version to see if it actually changed
                         old_ver = current_pass_versions.get(changed_pkg, "0.0.0")
                         
                         if reached_ver == old_ver or "skipped" in str(reached_ver):
-                            # It was a revert or no-op
                             print(f"  -> Result for {changed_pkg}: Reverted/Kept at {reached_ver} (No Change).")
                         else:
-                            # It's a REAL update
                             final_successful_updates[changed_pkg] = (old_ver, reached_ver)
                             changed_packages_this_pass.add(changed_pkg)
+                            real_changes_to_write[changed_pkg] = reached_ver
                             
                             if changed_pkg == package:
                                 print(f"  -> SUCCESS. Locking in {changed_pkg}=={reached_ver}")
                             else:
                                 print(f"  -> Co-Resolution Side-Effect: Locked in {changed_pkg}=={reached_ver}")
+                    
+                    # Perform the Write
+                    if real_changes_to_write:
+                        with open(progressive_baseline_path, "r") as f: lines = f.readlines()
+                        with open(progressive_baseline_path, "w") as f:
+                            for line in lines:
+                                p_name = self._get_package_name_from_spec(line.split('==')[0] if '==' in line else "")
+                                if p_name in real_changes_to_write:
+                                    f.write(f"{p_name}=={real_changes_to_write[p_name]}\n")
+                                else:
+                                    f.write(line)
+                    # ---------------------------------------------
 
                 else:
                     final_failed_updates[package] = (target_ver, "Failed")
@@ -291,7 +304,7 @@ class DependencyAgent:
         
         if final_successful_updates:
             self._print_final_summary(final_successful_updates, final_failed_updates)
-            print("\nRun complete. The final requirements.txt is the latest provably working version.")
+            print("\nRun complete. Successful updates have been applied to the requirements file.")
 
     def _print_final_summary(self, successful, failed):
         print("\n" + "#"*70); print("### OVERALL UPDATE RUN SUMMARY ###")
