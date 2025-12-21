@@ -455,9 +455,11 @@ class DependencyAgent:
         
         project_name = self.config.get("PROJECT_NAME", "").lower().replace('_', '-')
         
+        # Helper to filter noise, ensure lowercase for comparison
         def filter_blockers(blocker_set):
             return {
-                b for b in blocker_set 
+                b.lower() 
+                for b in blocker_set 
                 if b.lower() != package.lower() 
                 and b.lower() != project_name
                 and b.lower() != "pip"
@@ -469,20 +471,27 @@ class DependencyAgent:
         attempted_plans = set()
         
         global_available_updates = self.get_available_updates_from_plan()
+        
+        # Create a case-insensitive lookup map for available updates
+        # e.g. {'pillow': 'Pillow', 'numpy': 'numpy'}
+        available_updates_map = {k.lower(): k for k in global_available_updates.keys()}
 
         for i in range(max_greedy_attempts):
             print(f"\n    -> [Greedy Expansion Iteration {i+1}/{max_greedy_attempts}]")
             
             valid_blockers = filter_blockers(current_blockers)
             
-            updatable_blockers = {
-                pkg: ver for pkg, ver in global_available_updates.items() 
-                if pkg in valid_blockers
-            }
+            # Match blockers to available updates using the case-insensitive map
+            updatable_blockers = {}
+            for b in valid_blockers:
+                real_name = available_updates_map.get(b)
+                if real_name:
+                    updatable_blockers[real_name] = global_available_updates[real_name]
             
             print(f"       Current Conflict Cluster: {valid_blockers}")
             print(f"       Updatable Candidates: {list(updatable_blockers.keys())}")
             
+            # Stop if we have blockers but none are updatable (Dead End)
             if len(valid_blockers) > 0 and not updatable_blockers:
                 print("       CRITICAL: New blockers found, but none have available updates. Greedy Strategy stalled.")
                 break
@@ -553,7 +562,7 @@ class DependencyAgent:
             co_resolution_plan = self.expert.propose_co_resolution(
                 target_package=package, 
                 error_log=best_error_log if attempt == 1 else history[-1][1], 
-                available_updates=updatable_blockers,
+                available_updates=updatable_blockers, # Uses LAST known set of updatable blockers
                 current_versions=current_versions_map,
                 history=history
             )
@@ -585,7 +594,7 @@ class DependencyAgent:
 
         print(f"--> Healing Result: All attempts failed. Reverting.")
         return True, {package: current_version}, None
-        
+    
     def _heal_with_filter_and_scan(self, package, last_good_version, failed_version, baseline_reqs_path):
         start_group(f"Healing '{package}': Filter-Then-Scan Strategy")
         
