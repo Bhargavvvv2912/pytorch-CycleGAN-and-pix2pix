@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # We use 'gemini-2.0-flash' which is standard for the new SDK.
     llm_client = GeminiClientWrapper(
         api_key=GEMINI_API_KEY, 
-        model_name='gemini-2.0-flash'
+        model_name='gemini-2.5-flash'
     )
 
     agent = DependencyAgent(config=AGENT_CONFIG, llm_client=llm_client)
