@@ -196,7 +196,7 @@ class DependencyAgent:
             changed_packages_this_pass = set()
             processed_in_this_pass = set()
 
-            # Map Current Versions
+            # Map Current Versions for No-Op Detection
             current_pass_versions = {}
             with open(progressive_baseline_path, 'r') as f:
                 for line in f:
@@ -216,7 +216,6 @@ class DependencyAgent:
                 if progressive_baseline_path.exists(): progressive_baseline_path.unlink()
                 break 
 
-            # Prioritization
             update_plan = []
             for pkg, cur, target in packages_to_update:
                 components = self._calculate_update_risk_components(pkg, cur, target)
@@ -256,9 +255,6 @@ class DependencyAgent:
                 success, changes_dict, _ = self.attempt_update_with_healing(package, current_ver, target_ver, [], progressive_baseline_path, progressive_baseline_path)
                 
                 if success:
-                    # --- CRITICAL FIX: Persist changes to file ---
-                    # We write updates here to ensure Toplevel/Level1 successes are saved.
-                    # It creates a double-write for Greedy (which writes internally), but that is safe/idempotent.
                     real_changes_to_write = {}
                     
                     for changed_pkg, reached_ver in changes_dict.items():
@@ -277,7 +273,7 @@ class DependencyAgent:
                             else:
                                 print(f"  -> Co-Resolution Side-Effect: Locked in {changed_pkg}=={reached_ver}")
                     
-                    # Perform the Write
+                    # Persist changes to file
                     if real_changes_to_write:
                         with open(progressive_baseline_path, "r") as f: lines = f.readlines()
                         with open(progressive_baseline_path, "w") as f:
@@ -287,7 +283,6 @@ class DependencyAgent:
                                     f.write(f"{p_name}=={real_changes_to_write[p_name]}\n")
                                 else:
                                     f.write(line)
-                    # ---------------------------------------------
 
                 else:
                     final_failed_updates[package] = (target_ver, "Failed")
@@ -304,7 +299,7 @@ class DependencyAgent:
         
         if final_successful_updates:
             self._print_final_summary(final_successful_updates, final_failed_updates)
-            print("\nRun complete. Successful updates have been applied to the requirements file.")
+            print("\nRun complete. The final requirements.txt is the latest provably working version.")
 
     def _print_final_summary(self, successful, failed):
         print("\n" + "#"*70); print("### OVERALL UPDATE RUN SUMMARY ###")
@@ -468,7 +463,6 @@ class DependencyAgent:
         
         project_name = self.config.get("PROJECT_NAME", "").lower().replace('_', '-')
         
-        # Helper to filter noise, ensure lowercase for comparison
         def filter_blockers(blocker_set):
             return {
                 b.lower() 
@@ -484,17 +478,15 @@ class DependencyAgent:
         attempted_plans = set()
         
         global_available_updates = self.get_available_updates_from_plan()
-        
-        # Create a case-insensitive lookup map for available updates
-        # e.g. {'pillow': 'Pillow', 'numpy': 'numpy'}
         available_updates_map = {k.lower(): k for k in global_available_updates.keys()}
+
+        can_proceed_to_llm = False
 
         for i in range(max_greedy_attempts):
             print(f"\n    -> [Greedy Expansion Iteration {i+1}/{max_greedy_attempts}]")
             
             valid_blockers = filter_blockers(current_blockers)
             
-            # Match blockers to available updates using the case-insensitive map
             updatable_blockers = {}
             for b in valid_blockers:
                 real_name = available_updates_map.get(b)
@@ -504,14 +496,16 @@ class DependencyAgent:
             print(f"       Current Conflict Cluster: {valid_blockers}")
             print(f"       Updatable Candidates: {list(updatable_blockers.keys())}")
             
-            # Stop if we have blockers but none are updatable (Dead End)
             if len(valid_blockers) > 0 and not updatable_blockers:
-                print("       CRITICAL: New blockers found, but none have available updates. Greedy Strategy stalled.")
-                break
+                print("       CRITICAL: Blockers identified, but they are already at max version.")
+                print("       Aborting to prevent regression. Co-Resolution impossible.")
+                return True, {package: current_version}, None
 
             if not updatable_blockers and i == 0:
                 print("       No updatable blockers found in initial set. Skipping Greedy.")
                 break
+            
+            can_proceed_to_llm = True
 
             greedy_plan = [f"{package}=={target_version}"]
             for b_pkg, b_ver in updatable_blockers.items():
@@ -557,7 +551,11 @@ class DependencyAgent:
             current_blockers.update(filtered_new)
 
         # 4. NEURO-SYMBOLIC LOOP
-        print("\n       Greedy Heuristic exhausted. Proceeding to Neuro-Symbolic Refinement.")
+        if not can_proceed_to_llm and len(valid_blockers) > 0:
+             print("\n       Skipping LLM: Blockers exist but are not updatable.")
+             return True, {package: current_version}, None
+
+        print("\n       Greedy Heuristic exhausted.")
         
         current_versions_map = {}
         with open(baseline_reqs_path, 'r') as f:
@@ -575,7 +573,7 @@ class DependencyAgent:
             co_resolution_plan = self.expert.propose_co_resolution(
                 target_package=package, 
                 error_log=best_error_log if attempt == 1 else history[-1][1], 
-                available_updates=updatable_blockers, # Uses LAST known set of updatable blockers
+                available_updates=updatable_blockers,
                 current_versions=current_versions_map,
                 history=history
             )
