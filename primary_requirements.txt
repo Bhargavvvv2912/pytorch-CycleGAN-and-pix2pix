@@ -1,7 +1,7 @@
 torch
 torchvision
-numpy
-scikit-image
 dominate
+visdom
+numpy
 Pillow
-wandb
+scipy
