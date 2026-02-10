@@ -24,14 +24,14 @@ class GeminiClientWrapper:
         return response
 
 AGENT_CONFIG = {
-    "PROJECT_NAME": "skopt",
-    "IS_INSTALLABLE_PACKAGE": True, 
+    "PROJECT_NAME": "CycleGAN Dependency Resilience Agents",
+    "IS_INSTALLABLE_PACKAGE": False, 
     "REQUIREMENTS_FILE": "requirements.txt",
     "METRICS_OUTPUT_FILE": "metrics_output.txt",
     "PRIMARY_REQUIREMENTS_FILE": "primary_requirements.txt",
     "VALIDATION_CONFIG": {
         "type": "script",
-        "smoke_test_script": "validation_skopt.py",
+        "smoke_test_script": "validation_cyclegan.py",
         "project_dir": "." 
     },
     "MAX_RUN_PASSES": 3,
