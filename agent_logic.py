@@ -11,7 +11,8 @@ import json
 import subprocess
 from google.api_core.exceptions import ResourceExhausted
 from pypi_simple import PyPISimple
-from packaging.version import parse as parse_version
+from packaging.version import parse as parse_version, InvalidVersion
+from tenacity import retry, stop_after_attempt, wait_exponential
 from agent_utils import start_group, end_group, run_command, validate_changes
 from expert_agent import ExpertAgent
 
@@ -315,13 +316,49 @@ class DependencyAgent:
             for pkg, (target_ver, reason) in failed.items(): print(f"{pkg:<30} | {target_ver:<20} | {reason}")
         print("#"*70 + "\n")
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=False
+    )
+    
     def get_latest_version(self, package_name):
         try:
             package_info = self.pypi.get_project_page(package_name)
-            if not (package_info and package_info.packages): return None
-            stable_versions = [p.version for p in package_info.packages if p.version and not parse_version(p.version).is_prerelease]
-            return max(stable_versions, key=parse_version) if stable_versions else max([p.version for p in package_info.packages if p.version], key=parse_version)
-        except Exception: return None
+            if not (package_info and package_info.packages): 
+                return None
+            
+            stable_versions = []
+            for p in package_info.packages:
+                if not p.version:
+                    continue
+                try:
+                    # If this fails, it's a non-PEP 440 compliant version (like 0.3.2d.dev)
+                    parsed_v = parse_version(p.version)
+                    
+                    # Only include stable, non-prerelease versions
+                    if not parsed_v.is_prerelease:
+                        stable_versions.append(p.version)
+                except InvalidVersion:
+                    # Skip the "fossils" and keep moving
+                    continue
+            
+            if stable_versions:
+                # Return the highest compliant stable version
+                return max(stable_versions, key=parse_version)
+            
+            # Fallback: if NO stable versions exist, just get the max compliant version
+            all_valid = []
+            for p in package_info.packages:
+                try:
+                    all_valid.append(p.version)
+                except InvalidVersion:
+                    continue
+            return max(all_valid, key=parse_version) if all_valid else None
+            
+        except Exception as e:
+            print(f"  [!] PyPI Lookup Error for {package_name}: {e}")
+            return None
 
     def _run_bootstrap_and_validate(self, venv_dir, requirements_source):
         python_executable = str((venv_dir / "bin" / "python").resolve())
@@ -440,7 +477,7 @@ class DependencyAgent:
         
         if success:
             print(f"--> Toplevel Result: Direct update SUCCEEDED.")
-            return True, {package: result_data if "skipped" in str(result_data) else target_version}, None
+            return True, {package: target_version}, None
 
         print(f"\n--> Toplevel Result: Direct update FAILED. Reason: '{result_data}'")
         
@@ -455,108 +492,16 @@ class DependencyAgent:
              print(f"--> Healing Result: Level 1 Succeeded. Found new working version: {healed_version}")
              return True, {package: healed_version}, None
 
-        # --- ESCALATION TO LEVEL 2 ---
+        # --- ESCALATION TO LEVEL 2: DYNAMIC GREEDY EXPANSION ---
         print(f"\n--> Action: Level 1 Healing failed for '{package}'. Escalating to Level 2 'Iterative Greedy Expansion'.")
         
         best_error_log = level1_stderr if level1_stderr else toplevel_stderr
         current_blockers = set(self.expert.diagnose_conflict_from_log(best_error_log))
-        
         project_name = self.config.get("PROJECT_NAME", "").lower().replace('_', '-')
         
         def filter_blockers(blocker_set):
-            return {
-                b.lower() 
-                for b in blocker_set 
-                if b.lower() != package.lower() 
-                and b.lower() != project_name
-                and b.lower() != "pip"
-                and b.lower() != "setuptools"
-            }
+            return {b.lower() for b in blocker_set if b.lower() not in {package.lower(), project_name, "pip", "setuptools"}}
 
-        max_greedy_attempts = 5
-        greedy_history_log = [] 
-        attempted_plans = set()
-        
-        global_available_updates = self.get_available_updates_from_plan()
-        available_updates_map = {k.lower(): k for k in global_available_updates.keys()}
-
-        can_proceed_to_llm = False
-
-        for i in range(max_greedy_attempts):
-            print(f"\n    -> [Greedy Expansion Iteration {i+1}/{max_greedy_attempts}]")
-            
-            valid_blockers = filter_blockers(current_blockers)
-            
-            updatable_blockers = {}
-            for b in valid_blockers:
-                real_name = available_updates_map.get(b)
-                if real_name:
-                    updatable_blockers[real_name] = global_available_updates[real_name]
-            
-            print(f"       Current Conflict Cluster: {valid_blockers}")
-            print(f"       Updatable Candidates: {list(updatable_blockers.keys())}")
-            
-            if len(valid_blockers) > 0 and not updatable_blockers:
-                print("       CRITICAL: Blockers identified, but they are already at max version.")
-                print("       Aborting to prevent regression. Co-Resolution impossible.")
-                return True, {package: current_version}, None
-
-            if not updatable_blockers and i == 0:
-                print("       No updatable blockers found in initial set. Skipping Greedy.")
-                break
-            
-            can_proceed_to_llm = True
-
-            greedy_plan = [f"{package}=={target_version}"]
-            for b_pkg, b_ver in updatable_blockers.items():
-                if b_pkg.lower() != package.lower():
-                    greedy_plan.append(f"{b_pkg}=={b_ver}")
-            
-            plan_signature = tuple(sorted(greedy_plan))
-            if plan_signature in attempted_plans:
-                print("       CRITICAL: Detected logical cycle! Aborting Greedy Strategy.")
-                best_error_log = greedy_history_log[-1][1] if greedy_history_log else best_error_log
-                break
-            attempted_plans.add(plan_signature)
-            
-            print(f"       Testing Greedy Plan: {greedy_plan}")
-            
-            probe_success, probe_stderr = self._run_co_resolution_probe(greedy_plan, baseline_reqs_path)
-            
-            if probe_success:
-                print("--> Greedy Maximization SUCCEEDED!")
-                changes_map = {self._get_package_name_from_spec(p.split('==')[0]): p.split('==')[1] for p in greedy_plan}
-                
-                with open(progressive_baseline_path, "r") as f: temp_lines = f.readlines()
-                with open(progressive_baseline_path, "w") as f:
-                    for line in temp_lines:
-                        p_name = self._get_package_name_from_spec(line.split('==')[0] if '==' in line else "")
-                        if p_name in changes_map:
-                            f.write(f"{p_name}=={changes_map[p_name]}\n")
-                        else:
-                            f.write(line)
-                return True, changes_map, None
-            
-            greedy_history_log.append((str(greedy_plan), "Failed"))
-            
-            new_blockers = set(self.expert.diagnose_conflict_from_log(probe_stderr))
-            filtered_new = filter_blockers(new_blockers)
-            
-            if filtered_new.issubset(current_blockers):
-                print("       Result: Failure did not reveal new blockers. Greedy strategy stalled.")
-                best_error_log = probe_stderr
-                break
-            
-            print(f"       Result: Failure revealed new blockers: {filtered_new - current_blockers}")
-            current_blockers.update(filtered_new)
-
-        # 4. NEURO-SYMBOLIC LOOP
-        if not can_proceed_to_llm and len(valid_blockers) > 0:
-             print("\n       Skipping LLM: Blockers exist but are not updatable.")
-             return True, {package: current_version}, None
-
-        print("\n       Greedy Heuristic exhausted.")
-        
         current_versions_map = {}
         with open(baseline_reqs_path, 'r') as f:
             for line in f:
@@ -565,11 +510,54 @@ class DependencyAgent:
                     v_part = line.split('==')[1].split(';')[0].strip()
                     current_versions_map[p_name] = v_part
 
-        history = greedy_history_log 
+        max_greedy_attempts = 5
+        greedy_history_log = [] 
+        attempted_plans = set()
+        updatable_blockers = {} # Track blockers we've discovered are updatable
 
+        for i in range(max_greedy_attempts):
+            print(f"\n    -> [Greedy Expansion Iteration {i+1}/{max_greedy_attempts}]")
+            valid_blockers = filter_blockers(current_blockers)
+            
+            # DYNAMIC DISCOVERY: We check PyPI for every blocker found in the error log
+            for b in valid_blockers:
+                if b not in updatable_blockers:
+                    print(f"       Checking dynamic availability for blocker: {b}")
+                    latest_b_ver = self.get_latest_version(b)
+                    current_b_ver = current_versions_map.get(b)
+                    if latest_b_ver and current_b_ver and parse_version(latest_b_ver) > parse_version(current_b_ver):
+                        print(f"       -> [DYNAMIC FIX] {b} can be modernized ({current_b_ver} -> {latest_b_ver})")
+                        updatable_blockers[b] = latest_b_ver
+                    else:
+                        print(f"       -> [STABLE] {b} is at latest version or lookup failed.")
+
+            if len(valid_blockers) > 0 and not updatable_blockers:
+                print("       CRITICAL: Blockers identified, but no newer versions exist to resolve conflict.")
+                return True, {package: current_version}, None
+
+            greedy_plan = [f"{package}=={target_version}"]
+            for b_pkg, b_ver in updatable_blockers.items():
+                greedy_plan.append(f"{b_pkg}=={b_ver}")
+            
+            plan_signature = tuple(sorted(greedy_plan))
+            if plan_signature in attempted_plans: break
+            attempted_plans.add(plan_signature)
+            
+            probe_success, probe_stderr = self._run_co_resolution_probe(greedy_plan, baseline_reqs_path)
+            if probe_success:
+                print("--> DYNAMIC CO-RESOLUTION SUCCEEDED!")
+                changes_map = {self._get_package_name_from_spec(p.split('==')[0]): p.split('==')[1] for p in greedy_plan}
+                return True, changes_map, None
+            
+            greedy_history_log.append((str(greedy_plan), probe_stderr))
+            new_blockers = set(self.expert.diagnose_conflict_from_log(probe_stderr))
+            current_blockers.update(filter_blockers(new_blockers))
+
+        # --- LEVEL 3: LLM REFINEMENT ---
+        print("\n       Greedy Heuristic exhausted. Handing dynamic context to Expert.")
+        history = greedy_history_log 
         for attempt in range(1, 4):
             print(f"\n    -> [LLM Refinement Attempt {attempt}/3] Requesting Expert Plan...")
-            
             co_resolution_plan = self.expert.propose_co_resolution(
                 target_package=package, 
                 error_log=best_error_log if attempt == 1 else history[-1][1], 
@@ -577,33 +565,15 @@ class DependencyAgent:
                 current_versions=current_versions_map,
                 history=history
             )
-
-            if not co_resolution_plan or not co_resolution_plan.get("plausible"):
-                print("    -> Expert sees no plausible solution.")
-                break
+            if not co_resolution_plan or not co_resolution_plan.get("plausible"): break
 
             plan_list = co_resolution_plan['proposed_plan']
-            print(f"    -> Executing Plan: {plan_list}")
-            
             probe_success, probe_stderr = self._run_co_resolution_probe(plan_list, baseline_reqs_path)
-
             if probe_success:
-                 print("--> Co-resolution probe SUCCEEDED!")
                  changes_map = {self._get_package_name_from_spec(p.split('==')[0]): p.split('==')[1] for p in plan_list}
-                 
-                 with open(progressive_baseline_path, "r") as f: temp_lines = f.readlines()
-                 with open(progressive_baseline_path, "w") as f:
-                     for line in temp_lines:
-                         p_name = self._get_package_name_from_spec(line.split('==')[0] if '==' in line else "")
-                         if p_name in changes_map:
-                             f.write(f"{p_name}=={changes_map[p_name]}\n")
-                         else:
-                             f.write(line)
                  return True, changes_map, None
-            
-            history.append((str(plan_list), "Validation Failed"))
+            history.append((str(plan_list), probe_stderr))
 
-        print(f"--> Healing Result: All attempts failed. Reverting.")
         return True, {package: current_version}, None
     
     def _heal_with_filter_and_scan(self, package, last_good_version, failed_version, baseline_reqs_path):

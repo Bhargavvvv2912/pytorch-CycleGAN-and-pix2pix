@@ -4,6 +4,7 @@ import re
 import json
 from google.api_core.exceptions import ResourceExhausted
 from packaging.version import parse as parse_version
+from typing import Union, Optional, List, Dict
 
 class ExpertAgent:
     """
@@ -83,7 +84,7 @@ class ExpertAgent:
     def propose_co_resolution(
         self, target_package: str, error_log: str, available_updates: dict,
         current_versions: dict = None, history: list = None
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """
         Iterative Co-Resolution Planner with STRICT FORWARD-ONLY Validation.
         """

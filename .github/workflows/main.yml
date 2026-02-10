@@ -1,98 +1,53 @@
-name: Autonomous Dependency Updater for CycleGAN
+name: AURA Final Experiment - CycleGAN (Repo 37)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 */3 * *' # Run every 3 days
 
 jobs:
-  update-dependencies:
+  modernize-cyclegan:
     runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout Repository
+      - name: 📂 Checkout Repository
         uses: actions/checkout@v4
 
-        
-      - name: Set up Python 3.11
+      - name: 🐍 Set up Python 3.9
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.9'
 
-      - name: Install Agent Dependencies
+      - name: 🧪 1. Run Pip Baseline (The 2020 Stability Window)
         run: |
-          python -m pip install google-genai google-api-core pypi-simple packaging pip-tools
-      
-          # --- START OF NEW BASELINE STEP ---
-      - name:  Run Pip Baseline (The Control Group)
-        id: pip_baseline
-        continue-on-error: true  # CRITICAL: Don't stop if Pip fails! We EXPECT it to fail!
-        run: |
-          echo "========================================"
-          echo "STARTING PIP BASELINE TEST"
-          echo "========================================"
-          
-          # 1. Create a throwaway environment
           python -m venv baseline_env
-          source baseline_env/bin/activate
-          
-          # 2. Try the Standard Install (Record if this crashes)
-          echo "--> Attempting: pip install --upgrade -r requirements.txt"
-          pip install --upgrade -r requirements.txt
-          
-          # 3. Try to Install the Project (if needed)
-          if [ -f "setup.py" ]; then
-            pip install -e .
-          fi
-          
-          # 4. Run the Validation Script (Record if this crashes)
-          echo "--> Attempting: Running Validation Script"
-          python validation_cyclegan.py  # <--- MAKE SURE THIS MATCHES YOUR SCRIPT NAME
-          
-          echo "========================================"
-          echo "RESULT: PIP BASELINE PASSED"
-          echo "========================================"
+          ./baseline_env/bin/pip install --upgrade pip
+          ./baseline_env/bin/pip install -r requirements.txt
+          ./baseline_env/bin/python validation_cyclegan.py
 
+      - name: 💥 2. Run Pip Upgrade (The 2026 API Attack)
+        continue-on-error: true
+        run: |
+          python -m venv upgrade_env
+          ./upgrade_env/bin/pip install --upgrade pip
+          ./upgrade_env/bin/pip install -r primary_requirements.txt
+          ./upgrade_env/bin/python validation_cyclegan.py
 
-      - name: Run the Autonomous Agent
-        # -u forces unbuffered output. This ensures you see "Downloading..." logs 
-        # immediately instead of waiting 10 minutes for the buffer to flush.
-        run: python -u dependency_agent.py
+      - name: 🤖 3. Run AURA Agent (The Vision Resurrection)
+        run: |
+          python -m venv --system-site-packages aura_env
+          ./aura_env/bin/pip install google-genai google-api-core pypi-simple packaging pip-tools
+          ./aura_env/bin/python -u dependency_agent.py | tee aura_cyclegan_execution.log
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-      - name: Cleanup Agent Artifacts
+      - name: 💾 Final Commit & Close Dataset
+        if: always()
         run: |
-          # Remove all temporary venvs created by AURA so they don't get committed
-          rm -rf temp_venv final_venv bootstrap_venv temp_pip_check initial_check_venv temp_co_res_venv
-      
-      - name: Commit and push changes if any
-        run: |
-          git config --global user.name 'AURA Dependency Agent'
+          git config --global user.name 'AURA Agent'
           git config --global user.email 'aura-agent@users.noreply.github.com'
-          
-          TARGET_FILE="requirements.txt"
-          
-          # 1. Stage the requirements file
-          git add $TARGET_FILE
-          
-          # 2. Check if anything was actually staged (i.e., did the file change?)
-          if git diff --staged --quiet; then
-            echo "No changes detected in requirements.txt. Skipping commit."
-            exit 0
+          git add requirements.txt aura_cyclegan_execution.log
+          if ! git diff --staged --quiet; then
+            git commit -m "🤖 [ASE-2026] REPO 37/35: Modernized CycleGAN [skip ci]"
+            git push
           fi
-          
-          echo "Dependencies have changed. Committing and pushing..."
-          
-          COMMIT_BODY="Automated dependency updates via AURA."
-          if [ -f metrics_output.txt ]; then
-            COMMIT_BODY=$(cat metrics_output.txt)
-          fi
-          
-          git commit -m "chore(deps): Autonomously manage CycleGAN dependencies [skip ci]" -m "$COMMIT_BODY"
-          
-          git push

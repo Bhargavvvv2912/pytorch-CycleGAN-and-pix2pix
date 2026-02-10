@@ -1,7 +1,9 @@
+# Unpinned for Maximum Decay
 torch
 torchvision
-dominate
-visdom
 numpy
 Pillow
 scipy
+dominate
+visdom
+tqdm

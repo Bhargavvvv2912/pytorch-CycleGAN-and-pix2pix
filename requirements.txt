@@ -1,9 +1,11 @@
-# --- Safe Legacy Core (Late 2023 / Early 2024) ---
-# These are new enough to have Python 3.11 wheels, 
-# but old enough to NOT be Numpy 2.0.
-
-fastapi==0.95.0
-starlette==0.26.1
-pydantic>=1.8.0,<2.0.0
-uvicorn>=0.12.0,<0.40.0
-httpx==0.24.1
+# --- Authentic CycleGAN Baseline (2020 era) ---
+torch==1.7.1
+torchvision==0.8.2
+numpy==1.19.5
+# Legacy Imaging
+Pillow==8.0.0
+# Core Visualization & Math
+scipy==1.5.4
+dominate==2.4.0
+visdom==0.1.8.8
+tqdm==4.46.1
