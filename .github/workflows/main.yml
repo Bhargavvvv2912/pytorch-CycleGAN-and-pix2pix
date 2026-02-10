@@ -37,7 +37,7 @@ jobs:
         run: |
           python -m venv upgrade_env
           ./upgrade_env/bin/pip install --upgrade pip
-          ./upgrade_env/bin/pip install -r primary_requirements.txt
+          ./upgrade_env/bin/pip install --no-build-isolation primary_requirements.txt
           ./upgrade_env/bin/python validation_cyclegan.py
 
       - name: 🤖 3. Run AURA Agent (The Vision Resurrection)
