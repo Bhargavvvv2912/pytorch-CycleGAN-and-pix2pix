@@ -22,9 +22,14 @@ jobs:
         run: |
           python -m venv baseline_env
           ./baseline_env/bin/pip install --upgrade pip
-          # Fix: Legacy packages like visdom need an older setuptools
-          ./baseline_env/bin/pip install "setuptools<70.0.0"
-          ./baseline_env/bin/pip install -r requirements.txt
+          
+          # 1. Install legacy build tools into the environment
+          ./baseline_env/bin/pip install "setuptools<70.0.0" wheel
+          
+          # 2. Install requirements while DISABLING build isolation
+          # This forces visdom to use the setuptools we just installed.
+          ./baseline_env/bin/pip install --no-build-isolation -r requirements.txt
+          
           ./baseline_env/bin/python validation_cyclegan.py
 
       - name: 💥 2. Run Pip Upgrade (The 2026 API Attack)
